@@ -205,6 +205,13 @@ template withConn*(pool: PgPool, conn, body: untyped) =
     finally:
       await noCancel(pool.release(conn))
 
+proc simpleExec*(pool: PgPool, sql: string): Future[void] {.async.} =
+  let conn = await pool.acquire()
+  try:
+    await conn.simpleExec(sql)
+  finally:
+    await noCancel(pool.release(conn))
+
 proc exec*(pool: PgPool, sql: string,
            params: seq[Option[string]] = @[]): Future[int64] {.async.} =
   let conn = await pool.acquire()

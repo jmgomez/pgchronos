@@ -82,6 +82,32 @@ proc execInternal(conn: PgConn, sql: string,
   finally:
     conn.endOperation()
 
+proc simpleExec*(conn: PgConn, sql: string): Future[void] {.async.} =
+  ## Execute one or more SQL statements using the simple query protocol.
+  ## Supports multi-statement strings (e.g. "CREATE TABLE ...; CREATE INDEX ...").
+  ## No parameterization — use exec() for parameterized queries.
+  try:
+    conn.beginOperation()
+    if pqsendQuery(conn.rawConn, sql.cstring) == 0:
+      raise newException(PgError, "pqsendQuery failed: " & $pqerrorMessage(conn.rawConn))
+    await conn.flushSend()
+    var firstError: ref PgQueryError
+    while true:
+      let raw = await conn.waitResult()
+      if raw.isNil:
+        break
+      let status = pqresultStatus(raw)
+      if status == PGRES_FATAL_ERROR and firstError.isNil:
+        firstError = extractError(raw)
+      pqclear(raw)
+    if not firstError.isNil:
+      raise firstError
+  except CancelledError:
+    conn.close()
+    raise
+  finally:
+    conn.endOperation()
+
 proc exec*(conn: PgConn, sql: string,
            params: seq[Option[string]]): Future[int64] {.async.} =
   let res = await conn.execInternal(sql, params)

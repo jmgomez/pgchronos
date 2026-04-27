@@ -5,6 +5,7 @@ import chronos
 import ../src/pgchronos/types
 import ../src/pgchronos/conn
 import ../src/pgchronos/query
+import ../src/pgchronos/pool
 import ./helpers
 
 suite "Query and Exec":
@@ -250,4 +251,64 @@ suite "Query and Exec":
           discard
         let val = await conn.queryValue("SELECT 'recovered'")
         check val == some("recovered")
+    waitFor test()
+
+  test "simpleExec multi-statement SQL":
+    proc test() {.async.} =
+      await withTestConn proc(conn: PgConn) {.async.} =
+        await conn.simpleExec("""
+          DROP TABLE IF EXISTS tsimple_a;
+          DROP TABLE IF EXISTS tsimple_b;
+          CREATE TABLE tsimple_a (id int PRIMARY KEY, name text);
+          CREATE TABLE tsimple_b (id int PRIMARY KEY, ref_id int REFERENCES tsimple_a(id));
+          INSERT INTO tsimple_a VALUES (1, 'Alice');
+          INSERT INTO tsimple_a VALUES (2, 'Bob');
+          INSERT INTO tsimple_b VALUES (10, 1);
+        """)
+        let count = await conn.queryValue("SELECT count(*) FROM tsimple_a")
+        check count == some("2")
+        let refCount = await conn.queryValue("SELECT count(*) FROM tsimple_b")
+        check refCount == some("1")
+        await conn.simpleExec("DROP TABLE tsimple_b; DROP TABLE tsimple_a")
+    waitFor test()
+
+  test "simpleExec error in multi-statement raises PgQueryError":
+    proc test() {.async.} =
+      await withTestConn proc(conn: PgConn) {.async.} =
+        try:
+          await conn.simpleExec("""
+            CREATE TABLE tsimple_err (id int);
+            SLECT 1;
+            DROP TABLE tsimple_err;
+          """)
+          fail()
+        except PgQueryError as e:
+          check e.sqlState == "42601"
+        # Clean up in case first statement succeeded
+        try:
+          await conn.simpleExec("DROP TABLE IF EXISTS tsimple_err")
+        except PgError:
+          discard
+    waitFor test()
+
+  test "simpleExec connection reusable after":
+    proc test() {.async.} =
+      await withTestConn proc(conn: PgConn) {.async.} =
+        await conn.simpleExec("SELECT 1; SELECT 2; SELECT 3")
+        let val = await conn.queryValue("SELECT 'after_simple'")
+        check val == some("after_simple")
+    waitFor test()
+
+  test "simpleExec via pool":
+    proc test() {.async.} =
+      let pool = await newPool(TestConnStr, minSize = 1, maxSize = 3)
+      await pool.simpleExec("""
+        DROP TABLE IF EXISTS tsimple_pool;
+        CREATE TABLE tsimple_pool (val text);
+        INSERT INTO tsimple_pool VALUES ('hello');
+      """)
+      let val = await pool.queryValue("SELECT val FROM tsimple_pool")
+      check val == some("hello")
+      await pool.simpleExec("DROP TABLE tsimple_pool")
+      await pool.close()
     waitFor test()
