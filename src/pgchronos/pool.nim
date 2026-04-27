@@ -3,7 +3,7 @@ import std/deques
 import chronos
 import db_connector/postgres except PGconn, PGresult
 import ./types
-import ./conn
+import ./connection
 import ./query
 
 proc markIdle(pool: PgPool, conn: PgConn) =

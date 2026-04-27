@@ -2,7 +2,7 @@ import std/options
 import chronos
 import db_connector/postgres except PGconn, PGresult
 import ./types
-import ./conn
+import ./connection
 import ./libpq_extra
 import ./bridge
 import ./extract

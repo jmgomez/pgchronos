@@ -2,7 +2,7 @@ import std/os
 import std/options
 import chronos
 import ../src/pgchronos/types
-import ../src/pgchronos/conn
+import ../src/pgchronos/connection
 import ../src/pgchronos/pool
 
 const TestConnStr* = getEnv("PGCHRONOS_TEST_CONNSTR",

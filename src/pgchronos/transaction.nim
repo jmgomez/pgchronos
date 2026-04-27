@@ -1,6 +1,6 @@
 import chronos
 import ./types
-import ./conn
+import ./connection
 import ./query
 
 proc beginSql(isolation: TransactionIsolation, access: TransactionAccess): string =

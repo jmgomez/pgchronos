@@ -3,7 +3,7 @@ import std/options
 import chronos
 import db_connector/postgres except PGconn, PGresult
 import ../src/pgchronos/types
-import ../src/pgchronos/conn
+import ../src/pgchronos/connection
 import ../src/pgchronos/bridge
 import ../src/pgchronos/query
 import ../src/pgchronos/extract

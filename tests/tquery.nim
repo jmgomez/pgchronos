@@ -3,7 +3,7 @@ import std/options
 import std/strutils
 import chronos
 import ../src/pgchronos/types
-import ../src/pgchronos/conn
+import ../src/pgchronos/connection
 import ../src/pgchronos/query
 import ../src/pgchronos/pool
 import ./helpers
