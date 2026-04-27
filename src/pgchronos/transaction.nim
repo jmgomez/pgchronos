@@ -1,0 +1,58 @@
+import chronos
+import ./types
+import ./conn
+import ./query
+
+proc beginSql(isolation: TransactionIsolation, access: TransactionAccess): string =
+  result = "BEGIN"
+  case isolation
+  of tiDefault: discard
+  of tiReadCommitted: result.add " ISOLATION LEVEL READ COMMITTED"
+  of tiRepeatableRead: result.add " ISOLATION LEVEL REPEATABLE READ"
+  of tiSerializable: result.add " ISOLATION LEVEL SERIALIZABLE"
+  case access
+  of taDefault: discard
+  of taReadWrite: result.add " READ WRITE"
+  of taReadOnly: result.add " READ ONLY"
+
+type Transaction* = object
+  conn: PgConn
+  isolation: TransactionIsolation
+  access: TransactionAccess
+
+proc transactionImpl*(conn: PgConn,
+                      isolation: TransactionIsolation,
+                      access: TransactionAccess,
+                      body: proc(): Future[void] {.async.}): Future[void] {.async.} =
+  discard await conn.exec(beginSql(isolation, access))
+  try:
+    await body()
+    discard await conn.exec("COMMIT")
+  except CatchableError as e:
+    if not conn.isTainted and not conn.rawConn.isNil:
+      try:
+        discard await noCancel(conn.exec("ROLLBACK"))
+      except CatchableError as rollbackErr:
+        e.msg = e.msg & " (rollback failed: " & rollbackErr.msg & ")"
+        conn.close()
+    raise e
+
+proc withTransaction*(conn: PgConn,
+                      isolation: TransactionIsolation = tiDefault,
+                      access: TransactionAccess = taDefault): Transaction =
+  ## Returns a Transaction that, when used with ``await conn.withTransaction: body``,
+  ## executes body inside a database transaction.
+  Transaction(conn: conn, isolation: isolation, access: access)
+
+template await*(tx: Transaction, body: untyped) =
+  ## Executes ``body`` inside a database transaction.
+  ## Usage: ``await conn.withTransaction: body``
+  ## or:   ``await conn.withTransaction(isolation = tiSerializable): body``
+  ## NOTE: this currently depends on chronos async internals, so the package
+  ## pins chronos to < 5.0.0 until a stable public replacement is adopted.
+  let fut = transactionImpl(tx.conn, tx.isolation, tx.access,
+                             proc(): Future[void] {.async.} = body)
+  when declared(chronosInternalRetFuture):
+    chronosInternalRetFuture.internalChild = fut
+    yield chronosInternalRetFuture.internalChild
+    cast[type(fut)](chronosInternalRetFuture.internalChild).internalRaiseIfError(fut)

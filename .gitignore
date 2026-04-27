@@ -1,0 +1,28 @@
+# Nim build artifacts
+nimcache/
+nimbledeps/
+
+# Compiled test binaries
+tests/tall
+tests/tresult
+tests/tconn
+tests/tbridge
+tests/tquery
+tests/tnulls
+tests/tprepared
+tests/ttransaction
+tests/tpool
+tests/terrors
+tests/tlifetime
+tests/tintegration
+tests/tcancellations
+tests/tstreaming
+
+# Docs (generated, not source)
+docs/
+
+# Project management
+TODO.md
+TODO.comments.json
+SPEC.md
+docs/superpowers/
