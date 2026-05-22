@@ -280,3 +280,64 @@ suite "Connection Pool":
       check val == some("recovered")
       await pool.close()
     waitFor test()
+
+  test "stats reflects pool state":
+    proc test() {.async.} =
+      let pool = await newPool(TestConnStr, minSize = 2, maxSize = 5)
+      block:
+        let s = pool.stats
+        check s.minSize == 2
+        check s.maxSize == 5
+        check s.idle == 2
+        check s.active == 0
+        check s.waiters == 0
+        check s.closed == false
+      let c1 = await pool.acquire()
+      let c2 = await pool.acquire()
+      let c3 = await pool.acquire()  # forces a new connection above minSize
+      block:
+        let s = pool.stats
+        check s.active == 3
+        check s.idle == 0
+      await pool.release(c1)
+      await pool.release(c2)
+      await pool.release(c3)
+      block:
+        let s = pool.stats
+        check s.active == 0
+        check s.idle == 3
+      await pool.close()
+      check pool.stats.closed
+    waitFor test()
+
+  test "reap closes idle connections above minSize":
+    proc test() {.async.} =
+      # idleReapAfter very short so we don't wait long in the test
+      let pool = await newPool(TestConnStr, minSize = 1, maxSize = 5,
+                               idleReapAfter = milliseconds(50))
+      # Grow above minSize by acquiring extras
+      let c1 = await pool.acquire()
+      let c2 = await pool.acquire()
+      let c3 = await pool.acquire()
+      await pool.release(c1)
+      await pool.release(c2)
+      await pool.release(c3)
+      check pool.stats.idle == 3
+      # Wait past idleReapAfter, then reap explicitly — no traffic needed
+      await sleepAsync(milliseconds(100))
+      pool.reap()
+      check pool.stats.idle == 1  # only minSize left
+      await pool.close()
+    waitFor test()
+
+  test "reap respects minSize even after long idle":
+    proc test() {.async.} =
+      let pool = await newPool(TestConnStr, minSize = 2, maxSize = 5,
+                               idleReapAfter = milliseconds(50))
+      check pool.stats.idle == 2
+      await sleepAsync(milliseconds(100))
+      pool.reap()
+      # minSize=2 connections should still be there
+      check pool.stats.idle == 2
+      await pool.close()
+    waitFor test()

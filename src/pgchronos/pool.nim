@@ -197,6 +197,26 @@ proc close*(pool: PgPool) {.async.} =
   pool.clearIdle()
   pool.clearActiveConns()
 
+proc stats*(pool: PgPool): PoolStats =
+  ## Snapshot of pool state for monitoring/diagnostics.
+  PoolStats(
+    minSize: pool.minSize,
+    maxSize: pool.maxSize,
+    active: pool.activeCount,
+    idle: pool.idleCount,
+    pending: pool.pendingConnectCount,
+    waiters: pool.waitersLen,
+    connectFailures: pool.connectFailureCount,
+    closed: pool.isClosed,
+  )
+
+proc reap*(pool: PgPool) =
+  ## Force idle reaping now, bypassing the throttle window. Use this when
+  ## you want to shrink the pool above minSize without waiting for the next
+  ## acquire/release cycle. Idle connections older than idleReapAfter close.
+  pool.setLastReapAt(Moment.default)
+  pool.reapIdle()
+
 template withConn*(pool: PgPool, conn, body: untyped) =
   block:
     let conn = await pool.acquire()

@@ -69,6 +69,17 @@ type
     conn: PgConn
     leaseId: uint64
 
+  PoolStats* = object
+    ## Snapshot of pool state for observability.
+    minSize*: int
+    maxSize*: int
+    active*: int        ## connections currently borrowed
+    idle*: int          ## connections sitting in the pool ready to use
+    pending*: int       ## connect() calls in flight
+    waiters*: int       ## acquire() callers blocked waiting for a slot
+    connectFailures*: int  ## consecutive connect failures (resets on success)
+    closed*: bool
+
 # --- Internal helpers (cross-module, not part of the public API) ---
 # These procs are exported (*) so that conn.nim, pool.nim, query.nim, etc.
 # can access private fields. Nim has no package-private visibility.
