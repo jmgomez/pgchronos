@@ -17,6 +17,13 @@ tests/tlifetime
 tests/tintegration
 tests/tcancellations
 tests/tstreaming
+tests/tpoolleak
+tests/tborrow
+tests/tparams
+tests/trepo
+tests/tmigrate
+tests/ttesting
+tests/tintrospect
 
 # Docs (generated, not source)
 docs/

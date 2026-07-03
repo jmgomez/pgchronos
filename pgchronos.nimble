@@ -2,7 +2,7 @@ import std/os
 import std/strutils
 
 # Package
-version       = "0.1.0"
+version       = "0.2.0"
 author        = "jmgomez"
 description   = "Async PostgreSQL client for Nim — libpq + chronos"
 license       = "MIT"

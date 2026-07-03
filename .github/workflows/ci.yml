@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, devel ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mm: [refc, orc]   # build+test under both memory-management modes
+
+    services:
+      postgres:
+        image: postgres:16      # plain PostgreSQL, no pgmq
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pgchronos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGCHRONOS_TEST_CONNSTR: "host=127.0.0.1 port=5432 user=postgres password=postgres dbname=pgchronos_test"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev postgresql-client
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.x'
+
+      - name: Install deps
+        run: nimble install -y --depsOnly
+
+      - name: Build and run tests (--mm:${{ matrix.mm }}, --threads:on)
+        run: |
+          LIBDIR=$(pg_config --libdir)
+          nim c --mm:${{ matrix.mm }} --threads:on -d:test \
+            --dynlibOverride:pq \
+            --passL:"-L$LIBDIR -Wl,-rpath,$LIBDIR -lpq" \
+            -r tests/tall.nim

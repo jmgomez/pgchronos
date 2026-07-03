@@ -63,3 +63,31 @@ proc connect*(connStr: string): Future[PgConn] {.async.} =
     raise
 
   return conn
+
+type
+  TransactionStatus* = enum
+    tsUnknown   ## connection is closed/bad or the status is indeterminate
+    tsIdle      ## not in a transaction (autocommit)
+    tsActive    ## a command is currently in progress
+    tsInTrans   ## inside a valid transaction block
+    tsInError   ## inside a FAILED transaction block (must ROLLBACK to recover)
+
+proc transactionStatus*(conn: PgConn): TransactionStatus =
+  ## The connection's transaction state, read from libpq's client-side cache
+  ## (zero round-trips). `tsInError` is useful for pool-release hygiene.
+  if conn.isNil or conn.rawConn.isNil:
+    return tsUnknown
+  case pqtransactionStatus(conn.rawConn)
+  of PQTRANS_IDLE: tsIdle
+  of PQTRANS_ACTIVE: tsActive
+  of PQTRANS_INTRANS: tsInTrans
+  of PQTRANS_INERROR: tsInError
+  else: tsUnknown
+
+proc inTransaction*(conn: PgConn): bool =
+  ## True when the connection is inside a valid transaction block. Zero
+  ## round-trips. Use to guard operations that must run within the caller's
+  ## transaction (e.g. enqueueing to an outbox table). Returns false for a
+  ## FAILED transaction (see `transactionStatus`/`tsInError`), since a doomed
+  ## block cannot accept further work until it is rolled back.
+  conn.transactionStatus() == tsInTrans

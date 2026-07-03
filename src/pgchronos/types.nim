@@ -1,5 +1,6 @@
 import std/options
 import std/deques
+import std/strutils
 import chronos
 import db_connector/postgres
 
@@ -13,6 +14,12 @@ type
     busy: bool
     tainted: bool
     leaseId: uint64
+    claimed: bool
+      ## Handoff guard for cancellation-safe borrowing. A guarded acquire
+      ## (used by every library borrower) sets this false and arms a deferred
+      ## reclaim; the borrower flips it true synchronously the instant it
+      ## resumes. If the borrower is cancelled at the acquire await-resume it
+      ## never claims, and the reclaim returns the orphaned slot to the pool.
 
   PgPool* = ref object
     connStr: string
@@ -20,6 +27,10 @@ type
     idle: seq[PgConn]
     idleAt: seq[Moment]
     activeConns: seq[PgConn]
+    activeAt: seq[Moment]
+    acquiredCount: int64
+    releasedCount: int64
+    reclaimedCount: int64
     pendingConnects: int
     waiters: Deque[Future[void]]
     deadWaiters: int
@@ -79,6 +90,10 @@ type
     waiters*: int       ## acquire() callers blocked waiting for a slot
     connectFailures*: int  ## consecutive connect failures (resets on success)
     closed*: bool
+    acquired*: int64    ## total connections handed to a borrower (lifetime)
+    released*: int64    ## total connections returned to the pool (lifetime)
+    reclaimed*: int64   ## slots reclaimed after a cancelled-at-handoff borrow
+    oldestActiveMs*: int64  ## age of the longest-held active connection, in ms (0 if none)
 
 # --- Internal helpers (cross-module, not part of the public API) ---
 # These procs are exported (*) so that conn.nim, pool.nim, query.nim, etc.
@@ -87,7 +102,7 @@ type
 
 proc newPgConn*(raw: PPGconn, fd: AsyncFD, registered: bool): PgConn =
   PgConn(raw: raw, fd: fd, registered: registered, busy: false, tainted: false,
-         leaseId: 0'u64)
+         leaseId: 0'u64, claimed: true)
 
 proc rawConn*(conn: PgConn): PPGconn = conn.raw
 proc clearRawConn*(conn: PgConn) = conn.raw = nil
@@ -99,6 +114,8 @@ proc setBusy*(conn: PgConn, busy: bool) = conn.busy = busy
 proc isTainted*(conn: PgConn): bool = conn.tainted
 proc markTainted*(conn: PgConn) = conn.tainted = true
 proc clearTainted*(conn: PgConn) = conn.tainted = false
+proc isClaimed*(conn: PgConn): bool = conn.claimed
+proc setClaimed*(conn: PgConn, claimed: bool) = conn.claimed = claimed
 proc currentLeaseId*(conn: PgConn): uint64 = conn.leaseId
 proc bumpLeaseId*(conn: PgConn): uint64 =
   conn.leaseId = conn.leaseId + 1'u64
@@ -114,6 +131,10 @@ proc initPgPoolState*(connStr: string, minSize: int, maxSize: int,
     idle: @[],
     idleAt: @[],
     activeConns: @[],
+    activeAt: @[],
+    acquiredCount: 0,
+    releasedCount: 0,
+    reclaimedCount: 0,
     pendingConnects: 0,
     waiters: initDeque[Future[void]](),
     deadWaiters: 0,
@@ -158,8 +179,9 @@ proc clearIdle*(pool: PgPool) =
   pool.idle.setLen(0)
   pool.idleAt.setLen(0)
 
-proc addActiveConn*(pool: PgPool, conn: PgConn) =
+proc addActiveConn*(pool: PgPool, conn: PgConn, at: Moment) =
   pool.activeConns.add(conn)
+  pool.activeAt.add(at)
 proc activeConnIndex*(pool: PgPool, conn: PgConn): int =
   for i, c in pool.activeConns:
     if c == conn:
@@ -167,9 +189,24 @@ proc activeConnIndex*(pool: PgPool, conn: PgConn): int =
   return -1
 proc removeActiveConnAt*(pool: PgPool, idx: int) =
   pool.activeConns.del(idx)
+  pool.activeAt.del(idx)
 proc activeConns*(pool: PgPool): seq[PgConn] = pool.activeConns
 proc clearActiveConns*(pool: PgPool) =
   pool.activeConns.setLen(0)
+  pool.activeAt.setLen(0)
+proc oldestActiveAt*(pool: PgPool): Moment =
+  ## Timestamp of the longest-held active connection (Moment.high if none).
+  result = Moment.high
+  for t in pool.activeAt:
+    if t < result:
+      result = t
+
+proc noteAcquired*(pool: PgPool) = pool.acquiredCount.inc
+proc noteReleased*(pool: PgPool) = pool.releasedCount.inc
+proc noteReclaimed*(pool: PgPool) = pool.reclaimedCount.inc
+proc acquiredCount*(pool: PgPool): int64 = pool.acquiredCount
+proc releasedCount*(pool: PgPool): int64 = pool.releasedCount
+proc reclaimedCount*(pool: PgPool): int64 = pool.reclaimedCount
 
 proc reservePendingConnect*(pool: PgPool) = pool.pendingConnects.inc
 proc releasePendingConnect*(pool: PgPool) =
@@ -222,3 +259,96 @@ proc toOptSeq*(params: openArray[string]): seq[Option[string]] =
   result = newSeq[Option[string]](params.len)
   for i, p in params:
     result[i] = some(p)
+
+# =============================================================================
+# DbResult — Result/Either type for the repository layer
+# =============================================================================
+# A typed CRUD call returns DbResult[T] instead of raising, so callers branch on
+# isOk and get a classified DbErrorKind (unique / constraint / connection / ...).
+
+type
+  DbErrorKind* = enum
+    dekNotFound       ## No matching row
+    dekDuplicate      ## Unique constraint violation
+    dekConstraint     ## Foreign key or check constraint
+    dekConnection     ## Connection lost or pool exhausted
+    dekQuery          ## SQL syntax or execution error
+    dekMapping        ## Row-to-object conversion error
+    dekUnexpected     ## Catch-all
+
+  DbError* = object
+    kind*: DbErrorKind
+    message*: string
+    detail*: string
+
+  DbResult*[T] = object
+    case isOk*: bool
+    of true:
+      value*: T
+    of false:
+      error*: DbError
+
+# -- DbResult constructors --
+
+proc ok*[T](R: typedesc[DbResult[T]], val: T): DbResult[T] =
+  DbResult[T](isOk: true, value: val)
+
+proc ok*(R: typedesc[DbResult[void]]): DbResult[void] =
+  DbResult[void](isOk: true)
+
+proc err*[T](R: typedesc[DbResult[T]], kind: DbErrorKind, msg: string,
+    detail: string = ""): DbResult[T] =
+  DbResult[T](isOk: false, error: DbError(kind: kind, message: msg,
+      detail: detail))
+
+# -- DbResult accessors --
+
+proc get*[T](r: DbResult[T]): T =
+  if not r.isOk:
+    raise newException(Defect,
+        "Attempted to unwrap error DbResult: " & r.error.message)
+  r.value
+
+proc getOr*[T](r: DbResult[T], fallback: T): T =
+  if r.isOk: r.value else: fallback
+
+proc isNotFound*[T](r: DbResult[T]): bool =
+  not r.isOk and r.error.kind == dekNotFound
+
+proc errorStr*(e: DbError): string =
+  system.`$`(e.kind) & ": " & e.message
+
+proc str*[T](r: DbResult[T]): string =
+  if r.isOk:
+    when T is void: "Ok()"
+    else: "Ok(" & system.`$`(r.value) & ")"
+  else:
+    "Err(" & r.error.errorStr & ")"
+
+# =============================================================================
+# classifyPgError — map a PostgreSQL error to a DbErrorKind
+# =============================================================================
+
+proc classifyPgError*(e: ref CatchableError): DbErrorKind =
+  let msg = e.msg
+  when compiles(e of PgQueryError):
+    if e of PgQueryError:
+      let pgErr = (ref PgQueryError)(e)
+      let state = pgErr.sqlState
+      # 23505 = unique_violation
+      if state == "23505":
+        return dekDuplicate
+      # 23503 = foreign_key_violation, 23514 = check_violation
+      elif state == "23503" or state == "23514":
+        return dekConstraint
+      # 08xxx = connection exceptions
+      elif state.len >= 2 and state[0..1] == "08":
+        return dekConnection
+  if "duplicate key" in msg or "unique constraint" in msg:
+    dekDuplicate
+  elif "violates foreign key" in msg or "violates check constraint" in msg:
+    dekConstraint
+  elif "connection" in msg.toLowerAscii or "server closed" in msg.toLowerAscii:
+    dekConnection
+  else:
+    dekQuery

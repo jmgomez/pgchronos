@@ -6,6 +6,13 @@ import ./tnulls
 import ./tprepared
 import ./ttransaction
 import ./tpool
+import ./tpoolleak
+import ./tborrow
+import ./tparams
+import ./trepo
+import ./tmigrate
+import ./ttesting
+import ./tintrospect
 import ./terrors
 import ./tlifetime
 import ./tintegration
