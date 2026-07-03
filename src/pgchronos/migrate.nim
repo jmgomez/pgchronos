@@ -8,11 +8,11 @@
 ##   `pg_advisory_lock` is SESSION-scoped. Through a transaction-mode pooler
 ##   (e.g. PgBouncer) each statement may land on a different backend, so the
 ##   lock is silently useless — concurrent runners will NOT serialize. Run
-##   migrations on a DIRECT connection (Palestrum uses DATABASE_URL_DIRECT),
+##   migrations on a DIRECT connection (a dedicated non-pooled DSN),
 ##   never through the runtime pooler DSN. A pooler cannot be reliably detected
 ##   at runtime, so this is a documented contract, not a runtime check.
 ##
-## Merged from the pepetraining + hermes runners (same skeleton): advisory lock
+## Features: an advisory lock
 ## with a configurable `lockId`, `version`→`filename` column-rename compat, the
 ## `-- migrate:skip-if-namespace` directive for SQL-vendored extensions, and a
 ## dependency only on pgchronos core (no app repository import).

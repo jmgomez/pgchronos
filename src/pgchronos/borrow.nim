@@ -3,12 +3,12 @@
 ## Two families, both cancellation-safe (guarded acquire + shielded cleanup):
 ##
 ## * `withConn`   — AUTOCOMMIT borrow. No BEGIN/COMMIT; each statement commits
-##                  on its own. What pgchronos and Hermes have always meant by
+##                  on its own. The conventional meaning of
 ##                  `withConn`.
 ## * `withTxConn` — TRANSACTIONAL borrow. BEGIN -> optional `onBegin(conn)` hook
 ##                  -> body -> COMMIT, with automatic ROLLBACK on any exit that
 ##                  isn't a completed commit. `commitNow conn` commits early.
-##                  Palestrum's old `withConn` semantics, renamed so
+##                  an explicit-transaction borrow, named so
 ##                  transactional vs autocommit is explicit at the call site.
 ##
 ## Forms (all params `untyped`, so overloads resolve purely by arity — a typed
@@ -35,7 +35,7 @@ export pool.withConn  # re-export the explicit-pool autocommit template
 type
   OnBeginProc* = proc(conn: PgConn): Future[void] {.gcsafe.}
     ## Convenience type for annotating an onBegin hook. Passed inside the
-    ## transaction right after BEGIN. Palestrum uses it for
+    ## transaction right after BEGIN. A typical use is
     ## `set_config('app.tenant_id', ...)` / row-security — the transaction
     ## *skeleton* is library code, the *policy* stays in the app.
 
@@ -62,8 +62,7 @@ proc txReleaseCleanup*(pool: PgPool, conn: PgConn, committed: bool) {.async.} =
   ## Roll back an uncommitted transaction (best-effort) then release the conn.
   ## MUST be awaited through `noCancel`: a bare `await` in a `finally` fires the
   ## pending CancelledError at the await call site BEFORE this body runs, so the
-  ## release is skipped and the slot leaks permanently (Palestrum's authoritative
-  ## analysis of the failure mode).
+  ## release is skipped and the slot leaks permanently.
   if not committed and not conn.isNil and not conn.isTainted and
      not conn.rawConn.isNil:
     try:

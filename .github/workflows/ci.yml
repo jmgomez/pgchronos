@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mm: [refc, orc]   # Palestrum runs refc in prod; Hermes/tests run orc.
+        mm: [refc, orc]   # build+test under both memory-management modes
 
     services:
       postgres:

@@ -9,7 +9,7 @@ import ../src/pgchronos/query
 import ../src/pgchronos/repository
 import ./helpers
 
-# --- Non-tenant model (Hermes shape) ---
+# --- Non-tenant model ---
 type
   Widget* {.table: "repo_widgets".} = object
     id* {.pk.}: string
@@ -22,7 +22,7 @@ type
 
 generateRepository(Widget)
 
-# --- Tenant-scoped model (Palestrum shape) ---
+# --- Tenant-scoped model ---
 type
   Gadget* {.table: "repo_gadgets", tenantScoped.} = object
     id* {.pk.}: string

@@ -263,9 +263,8 @@ proc toOptSeq*(params: openArray[string]): seq[Option[string]] =
 # =============================================================================
 # DbResult — Result/Either type for the repository layer
 # =============================================================================
-# Hoisted byte-identical from pepetraining/hermes repository.nim. A typed CRUD
-# call returns DbResult[T] instead of raising, so callers branch on isOk and
-# get a classified DbErrorKind (unique / constraint / connection / ...).
+# A typed CRUD call returns DbResult[T] instead of raising, so callers branch on
+# isOk and get a classified DbErrorKind (unique / constraint / connection / ...).
 
 type
   DbErrorKind* = enum

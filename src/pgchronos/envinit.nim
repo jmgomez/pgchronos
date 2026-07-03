@@ -37,8 +37,8 @@ proc getPool*(): PgPool =
 
 proc resolvePoolSize*(size: int, sizeEnv: string): int =
   ## Precedence: explicit `size` arg (> 0) beats the env var, which beats the
-  ## default of 5. This is deliberately the reverse of Hermes' old behavior,
-  ## where POOL_SIZE silently shadowed the explicit argument (hermes M1).
+  ## default of 5. Explicit configuration must beat ambient env vars;
+  ## the reverse would let POOL_SIZE silently shadow the explicit argument.
   if size > 0:
     return size
   let envStr = getEnv(sizeEnv, "")
@@ -65,7 +65,7 @@ proc initPoolFromEnv*(size: int = 0, envVar = "DATABASE_URL",
   ## Initialize the ambient pool from the environment.
   ## Connection string: `envVar` (default `DATABASE_URL`), falling back to `default`.
   ## Size: explicit `size` arg (if > 0) beats `sizeEnv` (default `POOL_SIZE`)
-  ## beats the built-in default of 5 — EXPLICIT ARG WINS (fixes hermes M1).
+  ## beats the built-in default of 5 — EXPLICIT ARG WINS.
   let connStr = getEnv(envVar, default)
   let poolSize = resolvePoolSize(size, sizeEnv)
   return await initPool(connStr, size = poolSize, minSize = minSize,

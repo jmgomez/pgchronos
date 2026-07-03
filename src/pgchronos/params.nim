@@ -2,11 +2,11 @@
 ##
 ## pgchronos passes parameters as `seq[Option[string]]` (none = SQL NULL) and
 ## returns rows as `seq[Option[string]]`. These helpers bridge ordinary Nim
-## values to that representation. Merged from the two apps' repository shims:
+## values to that representation. Helpers:
 ##   * toUntypedParam — string -> param, letting PostgreSQL infer the type
 ##     (avoids uuid-vs-text mismatches on FK columns).
-##   * toNullableParam — "" -> SQL NULL (Hermes' nullable-column helper).
-##   * toPgParam[T]    — any value -> its `$` text (Hermes' generic helper).
+##   * toNullableParam — "" -> SQL NULL (for nullable columns).
+##   * toPgParam[T]    — any value -> its `$` text.
 ##   * getStr/isNull   — read a Row cell as string / test for NULL.
 
 import std/options

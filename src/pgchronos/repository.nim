@@ -12,17 +12,17 @@
 ##       createdAt* {.column: "created_at", readOnly.}: string
 ##   generateRepository(User)
 ##
-## MERGED from the two apps' repositories (identical except for 10 enumerated
-## differences). Base = Hermes internals (direct queryOne/queryValue, generic
-## toPgParam, PgConn/seq[Option[string]] signatures). Grafted:
-##   * {.tenantScoped.} — multi-tenant infra from Palestrum: tenant SQL variants
-##     and a trailing `tenantId: string` param on every CRUD proc. Costs nothing
-##     for non-tenant models (a compile-time `when` picks the plain signature).
-##   * {.nullable.} + toNullableParam — Hermes' ""→NULL column mapping.
-##   * NULL-guarded fromRow (Palestrum) — every field guarded via isNull.
-##   * dbScalarSeq (Palestrum).
-##   * withSavepoint (Palestrum's SAVEPOINT template, renamed from withTransaction
-##     to avoid clashing with transaction.nim).
+## Features:
+##   * direct queryOne/queryValue, generic toPgParam, PgConn/seq[Option[string]]
+##     signatures.
+##   * {.tenantScoped.} — multi-tenant infra: tenant SQL variants and a trailing
+##     `tenantId: string` param on every CRUD proc. Costs nothing for non-tenant
+##     models (a compile-time `when` picks the plain signature).
+##   * {.nullable.} + toNullableParam — ""→NULL column mapping.
+##   * NULL-guarded fromRow — every field guarded via isNull.
+##   * dbScalarSeq.
+##   * withSavepoint — a SAVEPOINT template (named to avoid clashing with
+##     transaction.nim).
 
 import std/[macros, genasts, strutils, options]
 import ./types
@@ -262,7 +262,7 @@ macro generateRepository*(T: typedesc): untyped =
     else:
       toRowItems.add newCall(ident("toPgParam"), newDotExpr(entityIdent, fld))
 
-  # -- Build fromRow: NULL-guard EVERY field (Palestrum) --
+  # -- Build fromRow: NULL-guard EVERY field --
   let rowIdent = ident("row")
   var fromRowBody = newNimNode(nnkStmtList)
   for i, f in fields:
@@ -646,8 +646,8 @@ proc dbScalarSeq*(conn: PgConn, query: string,
         "Scalar-seq query failed", e.msg)
 
 # =============================================================================
-# SAVEPOINT helper (renamed from Palestrum's withTransaction to avoid the
-# clash with transaction.nim). Nests a savepoint inside an open transaction.
+# SAVEPOINT helper (named to avoid the clash with transaction.nim). Nests a
+# savepoint inside an open transaction.
 # =============================================================================
 
 template withSavepoint*(conn: PgConn, body: untyped) =
