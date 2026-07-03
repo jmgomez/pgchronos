@@ -1,3 +1,4 @@
+{.push warning[Deprecated]: off.}
 import std/unittest
 import std/options
 import std/strutils

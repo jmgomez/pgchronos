@@ -44,12 +44,14 @@ proc withTransaction*(conn: PgConn,
   ## executes body inside a database transaction.
   Transaction(conn: conn, isolation: isolation, access: access)
 
-template await*(tx: Transaction, body: untyped) =
+template await*(tx: Transaction, body: untyped) {.deprecated:
+    "use withTxConn from pgchronos/borrow (removes the chronos <5.0.0 pin)".} =
   ## Executes ``body`` inside a database transaction.
   ## Usage: ``await conn.withTransaction: body``
   ## or:   ``await conn.withTransaction(isolation = tiSerializable): body``
-  ## NOTE: this currently depends on chronos async internals, so the package
-  ## pins chronos to < 5.0.0 until a stable public replacement is adopted.
+  ## DEPRECATED: superseded by ``withTxConn`` in ``pgchronos/borrow``. This
+  ## template depends on chronos async internals (``chronosInternalRetFuture``),
+  ## which is the sole remaining reason for the ``chronos < 5.0.0`` pin.
   let fut = transactionImpl(tx.conn, tx.isolation, tx.access,
                              proc(): Future[void] {.async.} = body)
   when declared(chronosInternalRetFuture):
