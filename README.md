@@ -1,170 +1,119 @@
 # pgchronos
 
-Async PostgreSQL client for Nim. Wraps libpq with [chronos](https://github.com/status-im/nim-chronos) for non-blocking I/O.
+Async PostgreSQL client for Nim — [libpq](https://www.postgresql.org/docs/current/libpq.html) + [chronos](https://github.com/status-im/nim-chronos).
 
-libpq handles the protocol (auth, SSL, wire format). chronos handles fd scheduling. pgchronos bridges them 
+libpq handles the wire protocol (auth, SSL, formats); chronos handles fd
+scheduling; pgchronos bridges them for non-blocking I/O.
 
 ## Install
 
 ```
-nimble install pgchronos
+requires "pgchronos >= 0.2.0"
 ```
 
-Requires `libpq` (PostgreSQL client library) installed on the system.
+Needs a system libpq. Link with `--dynlibOverride:pq --passL:"-L$(pg_config --libdir) -lpq"`.
 
-## Usage
+## Modules
+
+| Module | Purpose |
+|---|---|
+| `connection` | async connect/close, fd registration |
+| `query` | `exec` / `query` / `queryOne` / `queryValue`, `simpleExec` (multi-statement), `forEachRow` streaming |
+| `pool` | connection pool: sizing, idle reaping, `stats()`, cancellation-safe guarded acquire |
+| `borrow` | `withConn` (autocommit) + `withTxConn` (transaction) borrow templates |
+| `prepared` | prepared statement lifecycle |
+| `transaction` | conn-level `withTransaction` (**deprecated** — prefer `withTxConn`) |
+| `types` | `PgResult`, `Row`, `DbResult[T]`, error types, `classifyPgError` |
+| `params` | `toUntypedParam` / `toNullableParam` / `toPgParam[T]` / `getStr` / `isNull` |
+| `repository` | `generateRepository(T)` macro — SQL + typed CRUD from annotated types |
+| `migrate` | SQL-first migration runner |
+| `envinit` | ambient per-thread pool, `initPoolFromEnv` |
+| `testing` | test helpers (import `pgchronos/testing` explicitly) |
+
+## Borrowing connections
+
+Two families, all cancellation-safe:
 
 ```nim
 import pgchronos
 
-proc main() {.async.} =
-  let conn = await connect("host=127.0.0.1 dbname=mydb user=postgres")
+let pool = await newPool("postgresql://…")
 
-  discard await conn.exec("CREATE TABLE users (id serial PRIMARY KEY, name text, age int)")
-  discard await conn.exec("INSERT INTO users (name, age) VALUES ($1, $2)", "Alice", "30")
+# Autocommit (each statement commits on its own):
+pool.withConn conn:
+  discard await conn.exec("INSERT INTO t VALUES ($1)", @[some("x")])
 
-  let res = await conn.query("SELECT name, age FROM users WHERE age > $1", "25")
-  for row in res.rows:
-    echo row[0].get, " is ", row[1].get
-
-  let name = await conn.queryValue("SELECT name FROM users WHERE id = $1", "1")
-  echo name  # some("Alice")
-
-  conn.close()
-
-waitFor main()
+# Transaction (BEGIN → body → COMMIT, auto-rollback on any early exit):
+pool.withTxConn conn:
+  discard await conn.exec("UPDATE accounts SET bal = bal - 10 WHERE id = $1", @[some("a")])
+  discard await conn.exec("UPDATE accounts SET bal = bal + 10 WHERE id = $1", @[some("b")])
 ```
 
-## Pool
+With an ambient per-thread pool (from `envinit`), drop the `pool.` prefix:
 
 ```nim
-proc main() {.async.} =
-  let pool = await newPool("host=127.0.0.1 dbname=mydb", minSize = 2, maxSize = 10)
-
-  # Automatic acquire/release
-  pool.withConn conn:
-    discard await conn.exec("INSERT INTO users (name) VALUES ($1)", "Bob")
-
-  # Convenience methods
-  let count = await pool.queryValue("SELECT count(*) FROM users")
-
-  # Concurrent -- pool hands each coroutine its own connection
-  var futs: seq[Future[Option[string]]]
-  for i in 0..<20:
-    futs.add pool.queryValue("SELECT $1::text", $i)
-  await allFutures(futs)
-
-  await pool.close()
-
-waitFor main()
+discard await initPoolFromEnv()   # reads DATABASE_URL, POOL_SIZE
+withConn conn: …
+withTxConn conn: …
 ```
 
-## Transactions
+### `withTxConn` hazards
+
+* **RETURN ABORTS THE TRANSACTION.** A `return` (or other non-local exit)
+  before the implicit COMMIT rolls back everything the body wrote. To persist
+  first, call `commitNow conn` before returning.
+* An `onBegin(conn)` hook runs inside the transaction right after BEGIN — used
+  e.g. for `set_config('app.tenant_id', …)`:
+  `pool.withTxConn(conn, myOnBegin): …`.
+
+### Cancellation safety
+
+`withConn` / `withTxConn` and every pool-level helper are safe against a
+`CancelledError` delivered at the acquire handoff — a guarded acquire arms a
+deferred reclaim so an orphaned slot is returned to the pool. Raw
+`pool.acquire()` is **not** handoff-safe; if you must use it, follow the
+`acquireGuarded()` + `claim()` pattern, or just use the templates.
+
+## Migrations
+
+`runMigrations(conn, dir)` applies pending `.sql` files in filename order, each
+in its own transaction, tracked in `schema_migrations`.
+
+**DIRECT-CONNECTION CONTRACT:** the runner serializes concurrent runs with a
+session-scoped `pg_advisory_lock`, which is silently useless through a
+transaction-mode pooler (e.g. PgBouncer) — each statement may hit a different
+backend. **Run migrations on a direct connection, never the runtime pooler
+DSN.** This is a documented contract, not a runtime check (a pooler can't be
+reliably detected). A `-- migrate:skip-if-namespace <schema>` leading comment
+records a file as applied without executing it when `<schema>` already exists
+(for SQL-vendored, non-idempotent extensions).
+
+## Repository macro
 
 ```nim
-await conn.withTransaction:
-  discard await conn.exec("INSERT INTO accounts (id, balance) VALUES ($1, $2)", "1", "100")
-  discard await conn.exec("UPDATE accounts SET balance = balance - $1 WHERE id = $2", "50", "1")
-  # COMMIT on success, ROLLBACK on exception
+type
+  User* {.table: "users".} = object
+    id* {.pk.}: string
+    email*: string
+    firstName* {.column: "first_name".}: string
+    note* {.nullable.}: string          # "" ↔ SQL NULL
+    createdAt* {.column: "created_at", readOnly.}: string
+generateRepository(User)
 
-await conn.withTransaction(isolation = tiSerializable, access = taReadOnly):
-  let balance = await conn.queryValue("SELECT balance FROM accounts WHERE id = $1", "1")
+let r = await conn.dbInsert(User(email: "a@b.c"))   # -> DbResult[User]
+if r.isOk: echo r.get.id
 ```
 
-## Prepared Statements
-
-```nim
-let stmt = await conn.prepare("get_user", "SELECT name, age FROM users WHERE id = $1")
-let row = await stmt.queryOne("1")
-echo row.get[0]  # some("Alice")
-await stmt.close()
-```
-
-## Streaming
-
-For large result sets, `forEachRow` uses libpq's single-row mode -- only one row in memory at a time:
-
-```nim
-var total = 0
-let count = await conn.forEachRow("SELECT amount FROM transactions",
-  proc(row: Row): Future[void] {.async.} =
-    {.cast(gcsafe).}:
-      total += parseInt(row[0].get)
-)
-```
-
-Sync callback (no Future allocation per row):
-
-```nim
-await conn.forEachRow("SELECT id FROM big_table",
-  proc(row: Row) {.gcsafe.} =
-    echo row[0].get
-)
-```
-
-## NULL Handling
-
-Parameters and results use `Option[string]`. Pass `none(string)` for SQL NULL:
-
-```nim
-discard await conn.exec("INSERT INTO t VALUES ($1, $2)",
-                        @[some("value"), none(string)])
-
-let row = await conn.queryOne("SELECT nullable_col FROM t")
-if row.get[0].isNone:
-  echo "NULL"
-```
-
-## Errors
-
-```nim
-try:
-  discard await conn.exec("INSERT INTO users (id) VALUES (1)")  # duplicate
-except PgQueryError as e:
-  echo e.sqlState  # "23505" (unique_violation)
-  echo e.severity  # "ERROR"
-  echo e.detail    # "Key (id)=(1) already exists."
-```
-
-## Pool Configuration
-
-```nim
-let pool = await newPool(connStr,
-  minSize = 2,
-  maxSize = 20,
-  acquireTimeout = seconds(5),
-  idleReapAfter = minutes(5),
-  resetMode = rmTransactionCheck,  # skip DISCARD ALL for lower latency
-)
-```
-
-`ResetMode` options:
-- `rmDiscardAll` (default) -- `DISCARD ALL` on every release, safest
-- `rmTransactionCheck` -- only verify no open transaction, no extra round-trip
-- `rmNone` -- no reset, caller responsible for clean state
-
-## Row Helpers
-
-```nim
-let res = await conn.query("SELECT id, name, score, active FROM users")
-res.getInt(0, "id")       # some(1'i64)
-res.getStr(0, "name")     # some("Alice")
-res.getFloat(0, "score")  # some(3.14)
-res.getBool(0, "active")  # some(true)
-```
+Add `{.tenantScoped.}` to the type (with a `tenant_id` column) and every CRUD
+proc gains a trailing `tenantId` param that stamps inserts/updates and filters
+reads/deletes.
 
 ## Testing
-
-Requires a local PostgreSQL with a `pgchronos_test` database:
-
-```sql
-CREATE DATABASE pgchronos_test;
-```
 
 ```
 nimble test
 ```
 
-## License
-
-MIT
+Requires a local PostgreSQL with a `pgchronos_test` database. Override the DSN
+with `PGCHRONOS_TEST_CONNSTR`. CI builds under both `--mm:refc` and `--mm:orc`
+with `--threads:on`.
