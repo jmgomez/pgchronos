@@ -17,7 +17,7 @@ Needs a system libpq. Link with `--dynlibOverride:pq --passL:"-L$(pg_config --li
 
 | Module | Purpose |
 |---|---|
-| `connection` | async connect/close, fd registration |
+| `connection` | async connect/close, fd registration, transaction-status introspection (`inTransaction`/`transactionStatus`) |
 | `query` | `exec` / `query` / `queryOne` / `queryValue`, `simpleExec` (multi-statement), `forEachRow` streaming |
 | `pool` | connection pool: sizing, idle reaping, `stats()`, cancellation-safe guarded acquire |
 | `borrow` | `withConn` (autocommit) + `withTxConn` (transaction) borrow templates |
