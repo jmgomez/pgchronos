@@ -189,3 +189,59 @@ suite "migrate: SQL-first runner":
       await cleanSlate(conn)
       conn.close()
     waitFor test()
+
+  test "no-transaction migration runs CREATE INDEX CONCURRENTLY and records":
+    proc test() {.async.} =
+      let notxDir = currentSourcePath().parentDir() / "fixtures" / "notx_migrations"
+      let conn = await connect(TestConnStr)
+      await cleanSlate(conn)
+      await conn.simpleExec("DROP TABLE IF EXISTS notx_test CASCADE")
+      check (await conn.runMigrations(notxDir)) == 1
+      # Table + a VALID concurrent index exist.
+      check (await conn.queryValue(
+        "SELECT 1 FROM information_schema.tables WHERE table_name='notx_test'")).isSome
+      check (await conn.queryValue(
+        "SELECT i.indisvalid FROM pg_index i " &
+        "JOIN pg_class c ON c.oid = i.indexrelid " &
+        "WHERE c.relname = 'notx_test_idx'")).get("") == "t"
+      # Re-run is a no-op.
+      check (await conn.runMigrations(notxDir)) == 0
+      await conn.simpleExec("DROP TABLE IF EXISTS notx_test CASCADE")
+      await cleanSlate(conn)
+      conn.close()
+    waitFor test()
+
+  test "failing no-transaction migration is not recorded and re-runs":
+    proc test() {.async.} =
+      let failDir = currentSourcePath().parentDir() / "fixtures" / "notx_fail_migrations"
+      let conn = await connect(TestConnStr)
+      await cleanSlate(conn)
+      await conn.simpleExec("DROP TABLE IF EXISTS notx_fail_test CASCADE")
+
+      var raised1 = false
+      try: discard await conn.runMigrations(failDir)
+      except CatchableError: raised1 = true
+      check raised1
+      check (await conn.queryValue(
+        "SELECT COUNT(*) FROM schema_migrations WHERE filename='001_notx_fail.sql'")).get("0") == "0"
+
+      # Un-recorded → a second run attempts it again (raises again) rather than skipping.
+      var raised2 = false
+      try: discard await conn.runMigrations(failDir)
+      except CatchableError: raised2 = true
+      check raised2
+
+      await conn.simpleExec("DROP TABLE IF EXISTS notx_fail_test CASCADE")
+      await cleanSlate(conn)
+      conn.close()
+    waitFor test()
+
+  test "splitSqlStatements respects comments, strings, and dollar-quotes":
+    check splitSqlStatements("SELECT 1; SELECT 2;") == @["SELECT 1", "SELECT 2"]
+    # semicolon inside a string is not a split point
+    check splitSqlStatements("SELECT ';'; SELECT 2") == @["SELECT ';'", "SELECT 2"]
+    # semicolon inside a line comment is ignored
+    check splitSqlStatements("SELECT 1 -- a;b\n; SELECT 2") ==
+      @["SELECT 1 -- a;b", "SELECT 2"]
+    # dollar-quoted body with semicolons stays one statement
+    check splitSqlStatements("DO $$ BEGIN PERFORM 1; PERFORM 2; END $$; SELECT 9").len == 2

@@ -88,6 +88,12 @@ reliably detected). A `-- migrate:skip-if-namespace <schema>` leading comment
 records a file as applied without executing it when `<schema>` already exists
 (for SQL-vendored, non-idempotent extensions).
 
+A `-- migrate:no-transaction` leading comment runs the file's statements
+autocommitted (no surrounding BEGIN/COMMIT) so `CREATE INDEX CONCURRENTLY` and
+other statements PostgreSQL forbids inside a transaction work. Such migrations
+cannot roll back, so every statement must be idempotent (`... IF NOT EXISTS`); a
+mid-file failure leaves the file un-recorded and it re-runs.
+
 ## Repository macro
 
 ```nim
